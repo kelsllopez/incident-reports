@@ -1,0 +1,149 @@
+<!--
+  ================================================
+  REGLAS PERSONALIZADAS - CYBERCORP SOC
+  Archivo: wazuh-custom-rules-100001-100005.xml
+  Ruta en servidor: /var/ossec/etc/rules/local_rules.xml
+  Analista: Katalina Sepúlveda López
+  Fecha creación: 20/06/2026
+  Wazuh versión: 4.7.5
+  ================================================
+
+  ÍNDICE DE REGLAS:
+    100001 → Servicio instalado con script PowerShell (.ps1)
+    100002 → Usuario agregado a grupo Domain Admins
+    100003 → Múltiples logins fallidos (fuerza bruta)
+    100004 → Archivo .ps1 creado en System32
+    100005 → Nueva cuenta de usuario creada
+
+  CÓMO APLICAR:
+    sudo nano /var/ossec/etc/rules/local_rules.xml
+    (pegar el contenido dentro del archivo)
+    sudo /var/ossec/bin/wazuh-logtest
+    sudo systemctl restart wazuh-manager
+    sudo systemctl status wazuh-manager
+
+  CÓMO VERIFICAR QUE ESTÁN CARGADAS:
+    sudo grep -r "100001\|100002\|100003\|100004\|100005" /var/ossec/etc/rules/
+
+  CÓMO PROBAR REGLA 100004:
+    En Windows Server PowerShell:
+    New-Item -Path "C:\Windows\System32\test_regla.ps1" -ItemType File -Value "# Prueba"
+    En Wazuh buscar: rule.id: 100004
+
+  CÓMO PROBAR REGLA 100005:
+    En Windows Server PowerShell:
+    net user usuarioprueba2 Password123! /add /domain
+    En Wazuh buscar: rule.id: 100005
+    Limpiar: net user usuarioprueba2 /delete /domain
+  ================================================
+-->
+
+<group name="cybercorp,windows,persistence,">
+
+  <!-- ============================================ -->
+  <!-- REGLA 100001                                 -->
+  <!-- Detecta cuando se instala un servicio        -->
+  <!-- cuyo ejecutable es un script .ps1            -->
+  <!-- Táctica: Persistence / Privilege Escalation  -->
+  <!-- MITRE: T1543.003 - Windows Service           -->
+  <!-- Nivel: 12 (Alto)                             -->
+  <!-- Disparada por: EventID 7045                  -->
+  <!-- Caso real detectado: WindowsUpdateHelper     -->
+  <!--   apuntando a backdoor.ps1 (INC-005)         -->
+  <!-- ============================================ -->
+  <rule id="100001" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^7045$</field>
+    <field name="win.eventdata.imagePath">\.ps1$</field>
+    <description>CYBERCORP ALERTA: Servicio instalado con script PowerShell - Posible backdoor</description>
+    <mitre>
+      <id>T1543.003</id>
+    </mitre>
+  </rule>
+
+  <!-- ============================================ -->
+  <!-- REGLA 100002                                 -->
+  <!-- Detecta cuando un usuario es agregado        -->
+  <!-- al grupo Domain Admins                       -->
+  <!-- Táctica: Privilege Escalation                -->
+  <!-- MITRE: T1098 - Account Manipulation          -->
+  <!-- Nivel: 15 (Crítico — máximo en Wazuh)        -->
+  <!-- Disparada por: EventID 4728                  -->
+  <!-- Caso real detectado: hackersoc agregado a    -->
+  <!--   Domain Admins a las 21:35 (INC-004)        -->
+  <!-- ============================================ -->
+  <rule id="100002" level="15">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4728$</field>
+    <description>CYBERCORP CRITICO: Usuario agregado a grupo privilegiado - Posible escalada de privilegios</description>
+    <mitre>
+      <id>T1098</id>
+    </mitre>
+  </rule>
+
+  <!-- ============================================ -->
+  <!-- REGLA 100003                                 -->
+  <!-- Detecta múltiples logins fallidos seguidos   -->
+  <!-- 5+ intentos en 120 segundos = fuerza bruta   -->
+  <!-- Táctica: Credential Access                   -->
+  <!-- MITRE: T1110 - Brute Force                   -->
+  <!-- Nivel: 14 (Alto)                             -->
+  <!-- Basada en: rule 60122 (Logon Failure)        -->
+  <!-- Caso real detectado: 20+ intentos SMB en     -->
+  <!--   menos de 2 min contra usuarioprueba (INC-002) -->
+  <!-- ============================================ -->
+  <rule id="100003" level="14" frequency="5" timeframe="120">
+    <if_matched_sid>60122</if_matched_sid>
+    <same_field>win.eventdata.targetUserName</same_field>
+    <description>CYBERCORP ALERTA: Multiples logins fallidos detectados - Posible ataque de fuerza bruta</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+  </rule>
+
+  <!-- ============================================ -->
+  <!-- REGLA 100004                                 -->
+  <!-- Detecta cuando se crea un archivo .ps1       -->
+  <!-- dentro de C:\Windows\System32               -->
+  <!-- Táctica: Defense Evasion                     -->
+  <!-- MITRE: T1036 - Masquerading                  -->
+  <!-- Nivel: 12 (Alto)                             -->
+  <!-- Disparada por: FIM Syscheck (event: added)   -->
+  <!-- Caso real detectado: backdoor.ps1 creado en  -->
+  <!--   System32 a las 20:00:00 (INC-005)          -->
+  <!-- Requiere FIM activo en agent.conf:           -->
+  <!--   <directories realtime="yes">               -->
+  <!--     C:\Windows\System32                      -->
+  <!--   </directories>                             -->
+  <!-- ============================================ -->
+  <rule id="100004" level="12">
+    <if_group>syscheck</if_group>
+    <field name="syscheck.path">C:\\Windows\\System32\\.*\.ps1$</field>
+    <field name="syscheck.event">added</field>
+    <description>CYBERCORP ALERTA: Script PowerShell creado en System32 - Investigar inmediatamente</description>
+    <mitre>
+      <id>T1036</id>
+    </mitre>
+  </rule>
+
+  <!-- ============================================ -->
+  <!-- REGLA 100005                                 -->
+  <!-- Detecta cuando se crea una cuenta nueva      -->
+  <!-- en el sistema                                -->
+  <!-- Táctica: Persistence                         -->
+  <!-- MITRE: T1136 - Create Account                -->
+  <!-- Nivel: 10 (Medio)                            -->
+  <!-- Disparada por: EventID 4720                  -->
+  <!-- Caso real detectado: cuenta hackersoc        -->
+  <!--   creada a las 21:22:37 (INC-004)            -->
+  <!-- ============================================ -->
+  <rule id="100005" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4720$</field>
+    <description>CYBERCORP ALERTA: Nueva cuenta de usuario creada - Verificar autorizacion con administrador</description>
+    <mitre>
+      <id>T1136</id>
+    </mitre>
+  </rule>
+
+</group>
